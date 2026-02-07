@@ -1,0 +1,148 @@
+---
+- name: Configure Aerospace CFD Workstation
+  hosts: all
+  become: yes  # Run everything as root (sudo)
+  vars:
+    # ----------------------------------------------------------------
+    # CONFIGURATION VARIABLES
+    # ----------------------------------------------------------------
+    # The password for the Remote Desktop (GUI).
+    # In a real production setup, pass this securely via GitHub Secrets!
+    desktop_password: "aerospace-student"
+
+    # NICE DCV Download URL (Ubuntu 22.04 specific)
+    dcv_url: "https://d1uj6qtbmh9dt5.cloudfront.net/2023.1/Servers/nice-dcv-2023.1-16388-ubuntu2204-x86_64.tgz"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 1. SYSTEM PREP & DRIVERS
+    #    The g4dn instance needs NVIDIA drivers to render 3D.
+    # ----------------------------------------------------------------
+    - name: Update apt cache and upgrade system
+      apt:
+        update_cache: yes
+        upgrade: dist
+      register: apt_action
+      retries: 5
+      delay: 10
+
+    - name: Install essential tools
+      apt:
+        name:
+          - build-essential
+          - awscli
+          - wget
+          - curl
+          - mesa-utils   # For glxgears/glxinfo
+          - ubuntu-drivers-common
+        state: present
+
+    - name: Auto-install recommended NVIDIA drivers
+      command: ubuntu-drivers autoinstall
+      register: drivers_result
+      changed_when: "'No drivers found' not in drivers_result.stdout"
+
+    # ----------------------------------------------------------------
+    # 2. DESKTOP ENVIRONMENT (XFCE)
+    #    We use XFCE because it is lightweight and stable.
+    # ----------------------------------------------------------------
+    - name: Install XFCE Desktop
+      apt:
+        name:
+          - xfce4
+          - xfce4-goodies
+          - xorg
+          - dbus-x11
+          - x11-xserver-utils
+        state: present
+
+    # ----------------------------------------------------------------
+    # 3. OPENFOAM (The Engineering Software)
+    # ----------------------------------------------------------------
+    - name: Add OpenFOAM Repository
+      shell: |
+        wget -q -O - https://dl.openfoam.com/add-debian-repo.sh | bash
+      args:
+        creates: /etc/apt/sources.list.d/openfoam.list
+
+    - name: Install OpenFOAM (Latest) and ParaView
+      apt:
+        name: openfoam2312-default  # Adjust version if needed (e.g. openfoam2406)
+        update_cache: yes
+        state: present
+
+    - name: Add OpenFOAM environment to .bashrc
+      lineinfile:
+        path: /home/ubuntu/.bashrc
+        line: "source /usr/lib/openfoam/openfoam2312/etc/bashrc"
+        create: yes
+
+<<<<<<< HEAD
+    # ----------------------------------------------------------------
+    # 4. NICE DCV (Remote Desktop Server)
+    #    This enables the high-performance 3D streaming.
+    # ----------------------------------------------------------------
+    - name: Create DCV download directory
+      file:
+        path: /tmp/dcv
+        state: directory
+
+    - name: Download NICE DCV
+      unarchive:
+        src: "{{ dcv_url }}"
+        dest: /tmp/dcv
+        remote_src: yes
+        extra_opts: [--strip-components=1]
+=======
+    - name: Start VNC server (initial run to create config)
+      become: no
+      shell: |
+        vncserver :1
+      args:
+        creates: /home/ubuntu/.vnc
+
+    - name: Stop VNC server (if running)
+      become: no
+      shell: |
+        if pgrep Xtightvnc > /dev/null; then
+          vncserver -kill :1
+        fi
+>>>>>>> 278a15e82b29099ad79395bce944d8167e418390
+
+    - name: Install NICE DCV Server
+      apt:
+        deb: "/tmp/dcv/nice-dcv-server_2023.1.16388-1_amd64.ubuntu2204.deb"
+
+    - name: Install DCV Web Viewer (Optional but useful)
+      apt:
+        deb: "/tmp/dcv/nice-dcv-web-viewer_2023.1.16388-1_amd64.ubuntu2204.deb"
+
+    # ----------------------------------------------------------------
+    # 5. USER CONFIGURATION
+    #    Set the password so the student can log in to the GUI.
+    # ----------------------------------------------------------------
+    - name: Set password for 'ubuntu' user
+      user:
+        name: ubuntu
+        password: "{{ desktop_password | password_hash('sha512') }}"
+        shell: /bin/bash
+
+    - name: Create a 'Simulation_Runs' folder on Desktop
+      file:
+        path: /home/ubuntu/Desktop/Simulation_Runs
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+
+    # ----------------------------------------------------------------
+    # 6. FINAL REBOOT
+    #    Required for NVIDIA drivers and Desktop to load correctly.
+    # ----------------------------------------------------------------
+    - name: Reboot to apply drivers and start DCV
+      reboot:
+        msg: "Rebooting to load NVIDIA drivers and DCV"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: whoami
