@@ -1,0 +1,117 @@
+name: Aerospace Workstation Manager
+
+on:
+  workflow_dispatch:
+    inputs:
+      action_type:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy   # Creates a new workstation OR Resumes a paused one
+          - pause    # Stops the workstation (Saves money, keeps files safe)
+          - destroy  # Deletes EVERYTHING (Data is lost)
+
+env:
+  # Secrets configured in GitHub Repo -> Settings -> Secrets -> Actions
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_REGION: "us-east-1"
+  TF_VAR_aws_region: "us-east-1"
+  # This MUST match the name of the Key Pair you created in AWS Console!
+  TF_VAR_key_name: "aerospace-key"
+
+jobs:
+  manage-infrastructure:
+    name: Execute ${{ inputs.action_type }}
+    runs-on: ubuntu-latest
+
+    steps:
+      # ----------------------------------------------------------------
+      # 1. SETUP & INITIALIZATION
+      # ----------------------------------------------------------------
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false # Needed to capture raw outputs
+
+      - name: Create SSH Key File
+        # We need the private key on disk so Ansible can use it later
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
+          chmod 600 key.pem
+
+      - name: Initialize Terraform
+        # Ensure you have created this bucket in AWS or use the dynamic bootstrap script
+        run: |
+          terraform init -backend-config="bucket=aerospace-cfd-terraform-state"
+
+      # ----------------------------------------------------------------
+      # PATH A: PAUSE (Stop Instance)
+      # ----------------------------------------------------------------
+      - name: Pause Workstation
+        if: ${{ inputs.action_type == 'pause' }}
+        run: |
+          # Get the Instance ID from Terraform State
+          INSTANCE_ID=$(terraform output -raw instance_id)
+          echo "Stopping Instance: $INSTANCE_ID..."
+          aws ec2 stop-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+          echo "✅ Workstation paused. Storage is safe. Compute costs stopped."
+
+      # ----------------------------------------------------------------
+      # PATH B: DESTROY (Delete Everything)
+      # ----------------------------------------------------------------
+      - name: Destroy Workstation
+        if: ${{ inputs.action_type == 'destroy' }}
+        run: |
+          terraform destroy -auto-approve
+          echo "🗑️ Workstation and Storage deleted."
+
+      # ----------------------------------------------------------------
+      # PATH C: DEPLOY (Create OR Resume)
+      # ----------------------------------------------------------------
+      - name: Apply Infrastructure (Terraform)
+        if: ${{ inputs.action_type == 'deploy' }}
+        run: terraform apply -auto-approve
+
+      - name: Ensure Instance is Running (Resume)
+        if: ${{ inputs.action_type == 'deploy' }}
+        run: |
+          # If the instance was 'Paused', Terraform Apply might not auto-start it.
+          # We force start it here just in case.
+          INSTANCE_ID=$(terraform output -raw instance_id)
+          echo "Ensuring instance $INSTANCE_ID is running..."
+          aws ec2 start-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+
+      - name: Get Connection Details
+        if: ${{ inputs.action_type == 'deploy' }}
+        id: get_ip
+        run: |
+          IP=$(terraform output -raw workstation_public_ip)
+          echo "INSTANCE_IP=$IP" >> $GITHUB_ENV
+          echo "::notice::🚀 Workstation Ready! IP: $IP"
+
+      # ----------------------------------------------------------------
+      # CONFIGURATION (Ansible)
+      # Only runs on 'deploy' to install/update software
+      # ----------------------------------------------------------------
+      - name: Wait for SSH (Wake Up)
+        if: ${{ inputs.action_type == 'deploy' }}
+        run: |
+          echo "Waiting for SSH on ${{ env.INSTANCE_IP }}..."
+          # Loops for up to 5 minutes waiting for port 22 to open
+          timeout 300 bash -c 'until nc -z -v -w5 ${{ env.INSTANCE_IP }} 22; do sleep 5; done'
+
+      - name: Configure Software (Ansible)
+        if: ${{ inputs.action_type == 'deploy' }}
+        run: |
+          # The comma after INSTANCE_IP tells Ansible it's a list, not a file
+          ansible-playbook -i "${{ env.INSTANCE_IP }}," \
+            --user ubuntu \
+            --private-key key.pem \
+            --ssh-common-args='-o StrictHostKeyChecking=no' \
+            playbook.yml
