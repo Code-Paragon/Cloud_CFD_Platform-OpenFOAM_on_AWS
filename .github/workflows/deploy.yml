@@ -105,6 +105,10 @@ jobs:
           echo "Waiting for SSH on ${{ env.INSTANCE_IP }}..."
           timeout 300 bash -c 'until nc -z -v -w5 ${{ env.INSTANCE_IP }} 22; do sleep 5; done'
 
+      - name: Install Ansible Dependencies
+        if: ${{ inputs.action_type == 'deploy' }}
+        run: pip3 install passlib
+
       - name: Run Ansible
         if: ${{ inputs.action_type == 'deploy' }}
         run: |
