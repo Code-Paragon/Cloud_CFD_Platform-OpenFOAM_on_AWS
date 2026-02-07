@@ -1,31 +1,29 @@
 ---
 - name: Configure Aerospace CFD Workstation
   hosts: all
-  become: yes  # Run everything as root (sudo)
+  become: yes
   vars:
     # Password for the Remote Desktop (GUI).
-    # In production, use a Secret!
     desktop_password: "aerospace-student"
 
-    # NICE DCV Download URL (Ubuntu 22.04 specific)
-    dcv_url: "https://d1uj6qtbmh9dt5.cloudfront.net/2023.1/Servers/nice-dcv-2023.1-16388-ubuntu2204-x86_64.tgz"
+    # NEW: "Always Latest" URL (Corrected domain typo here)
+    dcv_url: "https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-ubuntu2204-x86_64.tgz"
 
   tasks:
     # ----------------------------------------------------------------
     # 0. MOUNT PERSISTENT DATA (The Backpack)
-    #    This ensures files survive even if the Spot Instance dies.
     # ----------------------------------------------------------------
     - name: Create data directory
       file:
         path: /data
         state: directory
-        mode: '0777' # Allow everyone to write
+        mode: '0777'
 
     - name: Format the volume (Only runs once, ever!)
       filesystem:
         fstype: ext4
-        dev: /dev/nvme1n1  # AWS attaches /dev/sdf as /dev/nvme1n1 on Nitro instances
-      ignore_errors: yes   # Ignore if already formatted (preserves data!)
+        dev: /dev/nvme1n1
+      ignore_errors: yes
 
     - name: Mount volume
       mount:
@@ -60,7 +58,7 @@
       command: ubuntu-drivers autoinstall
       register: drivers_result
       changed_when: "'No drivers found' not in drivers_result.stdout"
-      ignore_errors: yes # Prevents crash if using CPU-only instances (c5)
+      ignore_errors: yes
 
     # ----------------------------------------------------------------
     # 2. DESKTOP ENVIRONMENT (XFCE)
@@ -76,7 +74,7 @@
         state: present
 
     # ----------------------------------------------------------------
-    # 3. OPENFOAM (The Engineering Software)
+    # 3. OPENFOAM
     # ----------------------------------------------------------------
     - name: Add OpenFOAM Repository
       shell: |
@@ -104,20 +102,19 @@
         path: /tmp/dcv
         state: directory
 
-    - name: Download NICE DCV
+    - name: Download NICE DCV (Latest)
       unarchive:
         src: "{{ dcv_url }}"
         dest: /tmp/dcv
         remote_src: yes
         extra_opts: [--strip-components=1]
 
+    # We use wildcards (*) because the version number changes automatically
     - name: Install NICE DCV Server
-      apt:
-        deb: "/tmp/dcv/nice-dcv-server_2023.1.16388-1_amd64.ubuntu2204.deb"
+      shell: apt install -y /tmp/dcv/nice-dcv-server_*.deb
 
     - name: Install DCV Web Viewer
-      apt:
-        deb: "/tmp/dcv/nice-dcv-web-viewer_2023.1.16388-1_amd64.ubuntu2204.deb"
+      shell: apt install -y /tmp/dcv/nice-dcv-web-viewer_*.deb
 
     # ----------------------------------------------------------------
     # 5. USER CONFIGURATION
