@@ -55,21 +55,34 @@ resource "aws_route_table_association" "cfd_rta" {
 
 resource "aws_security_group" "cfd_sg" {
   name        = "cfd-workstation-sg"
-  description = "Allow SSH and DCV"
+  description = "Allow SSH, DCV (8443), and HTTPS (443)"
   vpc_id      = aws_vpc.cfd_vpc.id
 
+  # 1. SSH (Terminal)
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  # 2. DCV Original Port (Backup)
   ingress {
     from_port   = 8443
     to_port     = 8443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  # 3. HTTPS Port (NEW - Required for the redirect to work!)
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Outbound Traffic (Allow everything)
   egress {
     from_port   = 0
     to_port     = 0
