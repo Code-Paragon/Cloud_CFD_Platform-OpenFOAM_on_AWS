@@ -105,15 +105,17 @@ jobs:
           echo "Waiting for SSH on ${{ env.INSTANCE_IP }}..."
           timeout 300 bash -c 'until nc -z -v -w5 ${{ env.INSTANCE_IP }} 22; do sleep 5; done'
 
-      - name: Install Ansible Dependencies
-        if: ${{ inputs.action_type == 'deploy' }}
-        run: sudo pip3 install passlib
-
       - name: Run Ansible
         if: ${{ inputs.action_type == 'deploy' }}
         run: |
+          # 1. Pre-calculate the password hash using Linux OpenSSL
+          #    -6 generates a secure SHA-512 hash
+          HASH=$(openssl passwd -6 "aerospace-student")
+          
+          # 2. Pass the hash to Ansible using the -e (extra vars) flag
           ansible-playbook -i "${{ env.INSTANCE_IP }}," \
             --user ubuntu \
             --private-key key.pem \
             --ssh-common-args='-o StrictHostKeyChecking=no' \
+            -e "desktop_password_hash=$HASH" \
             playbook.yml

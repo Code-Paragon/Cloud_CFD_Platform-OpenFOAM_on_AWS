@@ -3,9 +3,6 @@
   hosts: all
   become: yes
   vars:
-    # Password for the Remote Desktop (GUI).
-    desktop_password: "aerospace-student"
-
     # NEW: "Always Latest" URL (Corrected domain typo here)
     dcv_url: "https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-ubuntu2204-x86_64.tgz"
 
@@ -122,7 +119,7 @@
     - name: Set password for 'ubuntu' user
       user:
         name: ubuntu
-        password: "{{ desktop_password | password_hash('sha512') }}"
+        password: "{{ desktop_password_hash }}"
         shell: /bin/bash
 
     - name: Create a 'Simulation_Runs' folder on Desktop
