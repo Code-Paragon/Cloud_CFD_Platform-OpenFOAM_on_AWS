@@ -8,20 +8,24 @@
 
   tasks:
     # ----------------------------------------------------------------
-    # 1. NETWORK & FIREWALL (Switch to Port 443)
+    # 1. NETWORK & FIREWALL (The Redirect Fix)
     # ----------------------------------------------------------------
-    - name: Force allow Port 443 (Standard HTTPS)
-      command: ufw allow 443/tcp
-      ignore_errors: yes
-
     - name: Disable UFW entirely
       service:
         name: ufw
         state: stopped
         enabled: no
 
-    - name: Flush iptables
+    - name: Flush existing iptables rules
       command: iptables -F
+
+    - name: Flush NAT table
+      command: iptables -t nat -F
+
+    # CRITICAL FIX: Redirect Port 443 (HTTPS) -> 8443 (DCV)
+    # This allows you to connect via https://IP without specifying a port
+    - name: Forward Port 443 to 8443
+      command: iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 8443
 
     # ----------------------------------------------------------------
     # 2. MOUNT STORAGE
@@ -46,7 +50,7 @@
         state: mounted
 
     # ----------------------------------------------------------------
-    # 3. INSTALL DESKTOP (XFCE + LIGHTDM)
+    # 3. INSTALL DESKTOP
     # ----------------------------------------------------------------
     - name: Update apt cache
       apt:
@@ -93,7 +97,7 @@
               EndSubSection
           EndSection
 
-    - name: Ensure LightDM is the default display manager
+    - name: Ensure LightDM is default
       shell: |
         echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
         dpkg-reconfigure -f noninteractive lightdm
@@ -138,13 +142,8 @@
     - name: Install DCV Web Viewer
       shell: apt install -y /tmp/dcv/nice-dcv-web-viewer_*.deb
 
-    # NEW: Change DCV to listen on Port 443 (Fixes network blocks)
-    - name: Configure DCV to use Port 443
-      lineinfile:
-        path: /etc/dcv/dcv.conf
-        regexp: '^#?listen-port='
-        line: 'listen-port=443'
-        state: present
+    # We removed the failed config editing task here.
+    # We rely on the iptables redirect instead.
 
     # ----------------------------------------------------------------
     # 6. USER & PASSWORD
@@ -165,7 +164,7 @@
     # ----------------------------------------------------------------
     # 7. STARTUP SEQUENCE
     # ----------------------------------------------------------------
-    - name: Restart Display Manager (Load Fake Monitor)
+    - name: Restart Display Manager
       service:
         name: lightdm
         state: restarted
@@ -174,13 +173,12 @@
       pause:
         seconds: 10
 
-    - name: Enable and Restart DCV (Apply Port 443 change)
+    - name: Enable and Restart DCV
       service:
         name: dcvserver
         enabled: yes
         state: restarted
 
-    # This task now ignores the error if the session already exists
     - name: Create DCV Session
       shell: dcv create-session --type console --owner ubuntu console
       register: dcv_session
@@ -192,11 +190,18 @@
     # ----------------------------------------------------------------
     # 8. DEBUGGING
     # ----------------------------------------------------------------
-    - name: Check if Port 443 is OPEN
-      shell: ss -tulpn | grep 443
-      register: port_check
+    - name: Check Port 8443 (Where server listens)
+      shell: ss -tulpn | grep 8443
+      register: port_8443_check
       ignore_errors: yes
 
-    - name: PRINT PORT STATUS
+    - name: Check NAT Table (Where forwarding happens)
+      shell: iptables -t nat -L -n -v | grep 8443
+      register: nat_check
+      ignore_errors: yes
+
+    - name: PRINT PORT & NAT STATUS
       debug:
-        var: port_check.stdout_lines
+        msg:
+          - "Server Listener: {{ port_8443_check.stdout }}"
+          - "Forwarding Rule: {{ nat_check.stdout }}"
