@@ -8,10 +8,10 @@
 
   tasks:
     # ----------------------------------------------------------------
-    # 1. NETWORK & FIREWALL
+    # 1. NETWORK & FIREWALL (Switch to Port 443)
     # ----------------------------------------------------------------
-    - name: Force allow Port 8443
-      command: ufw allow 8443/tcp
+    - name: Force allow Port 443 (Standard HTTPS)
+      command: ufw allow 443/tcp
       ignore_errors: yes
 
     - name: Disable UFW entirely
@@ -138,6 +138,14 @@
     - name: Install DCV Web Viewer
       shell: apt install -y /tmp/dcv/nice-dcv-web-viewer_*.deb
 
+    # NEW: Change DCV to listen on Port 443 (Fixes network blocks)
+    - name: Configure DCV to use Port 443
+      lineinfile:
+        path: /etc/dcv/dcv.conf
+        regexp: '^#?listen-port='
+        line: 'listen-port=443'
+        state: present
+
     # ----------------------------------------------------------------
     # 6. USER & PASSWORD
     # ----------------------------------------------------------------
@@ -155,40 +163,40 @@
         group: ubuntu
 
     # ----------------------------------------------------------------
-    # 7. STARTUP SEQUENCE (FIXED ORDER)
+    # 7. STARTUP SEQUENCE
     # ----------------------------------------------------------------
-
-    # Step A: Restart Display Manager FIRST to load the Fake Monitor
-    - name: Restart Display Manager
+    - name: Restart Display Manager (Load Fake Monitor)
       service:
         name: lightdm
         state: restarted
 
-    # Step B: Wait for X11 to stabilize (Crucial for C5 instances)
     - name: Wait for X11
       pause:
         seconds: 10
 
-    # Step C: Start DCV
-    - name: Enable DCV Service
+    - name: Enable and Restart DCV (Apply Port 443 change)
       service:
         name: dcvserver
         enabled: yes
-        state: started
+        state: restarted
 
-    # Step D: Create Session (Now that X11 is guaranteed ready)
+    # This task now ignores the error if the session already exists
     - name: Create DCV Session
-      command: dcv create-session --type console --owner ubuntu console
+      shell: dcv create-session --type console --owner ubuntu console
+      register: dcv_session
+      failed_when:
+        - dcv_session.rc != 0
+        - "'already exists' not in dcv_session.stderr"
       ignore_errors: yes
 
     # ----------------------------------------------------------------
-    # 8. DEBUGGING (Verify it worked)
+    # 8. DEBUGGING
     # ----------------------------------------------------------------
-    - name: Check if Port 8443 is OPEN
-      shell: ss -tulpn | grep 8443
+    - name: Check if Port 443 is OPEN
+      shell: ss -tulpn | grep 443
       register: port_check
       ignore_errors: yes
 
-    - name: PRINT PORT STATUS (Check Logs if this fails!)
+    - name: PRINT PORT STATUS
       debug:
         var: port_check.stdout_lines
