@@ -107,7 +107,7 @@ jobs:
 
       - name: Install Ansible Dependencies
         if: ${{ inputs.action_type == 'deploy' }}
-        run: pip3 install passlib
+        run: sudo pip3 install passlib
 
       - name: Run Ansible
         if: ${{ inputs.action_type == 'deploy' }}
