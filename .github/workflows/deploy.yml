@@ -9,26 +9,16 @@ on:
         default: 'deploy'
         type: choice
         options:
-          - deploy   # Creates or Resumes
-          - pause    # Stops instance (Saves money)
-          - destroy  # Deletes everything
-      instance_type:
-        description: 'Hardware Power'
-        required: true
-        default: 'c5.2xlarge'
-        type: choice
-        options:
-          - c5.2xlarge   # CPU Only (No waiting for AWS limits!)
-          - g4dn.xlarge  # GPU (Requires AWS Quota Approval)
+          - deploy   # Creates a new workstation
+          - pause    # TERMINATES the workstation but keeps storage safe
+          - destroy  # Deletes EVERYTHING (Data is lost)
 
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_REGION: "us-east-1"
   TF_VAR_aws_region: "us-east-1"
-  # This MUST match the name of the Key Pair you created in AWS Console!
   TF_VAR_key_name: "aerospace-key"
-  TF_VAR_instance_type: ${{ inputs.instance_type }}
 
 jobs:
   manage-infrastructure:
@@ -50,47 +40,36 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
           chmod 600 key.pem
 
-      # 2. BOOTSTRAP S3 BUCKET (The "Magic" Step)
-      # This checks if the bucket exists. If not, it creates it using AWS CLI.
       - name: Bootstrap State Bucket
         id: bootstrap
         run: |
-          # Create a unique name using the repo owner's name to avoid conflicts
-          # Lowercase is required for S3
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           BUCKET_NAME="aerospace-cfd-state-${OWNER}"
           
-          echo "Target Bucket: $BUCKET_NAME"
-          
-          # Check if bucket exists (head-bucket returns 0 if yes, 404 if no)
           if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
-            echo "✅ Bucket already exists."
+            echo "✅ Bucket exists."
           else
-            echo "⚠️ Bucket not found. Creating..."
+            echo "⚠️ Creating bucket..."
             aws s3 mb s3://$BUCKET_NAME --region us-east-1
-            # Enable versioning so we don't lose the state file easily
             aws s3api put-bucket-versioning --bucket $BUCKET_NAME --versioning-configuration Status=Enabled
-            echo "✅ Bucket created."
           fi
-          
-          # Save the name so the next step can use it
           echo "STATE_BUCKET=$BUCKET_NAME" >> $GITHUB_ENV
 
-      # 3. TERRAFORM INIT (Using the bucket we just found/created)
       - name: Initialize Terraform
         run: |
           terraform init -backend-config="bucket=${{ env.STATE_BUCKET }}"
 
       # ----------------------------------------------------------------
-      # ACTION: PAUSE
+      # ACTION: PAUSE (Actually Terminates Spot, Keeps Data)
       # ----------------------------------------------------------------
       - name: Pause Workstation
         if: ${{ inputs.action_type == 'pause' }}
         run: |
-          INSTANCE_ID=$(terraform output -raw instance_id)
-          echo "Stopping Instance: $INSTANCE_ID..."
-          aws ec2 stop-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
-          echo "✅ Workstation paused."
+          # For Spot Instances, "Stopping" isn't allowed. We must Terminate.
+          # But since we have a Persistent Data Volume, this is safe!
+          echo "⚠️ Spot Instances cannot be stopped. Terminating instance (Data volume will be preserved)..."
+          terraform destroy -target=aws_instance.cfd_workstation -auto-approve
+          echo "✅ Workstation terminated. Storage volume is SAFE and waiting for next deploy."
 
       # ----------------------------------------------------------------
       # ACTION: DESTROY
@@ -102,17 +81,14 @@ jobs:
           echo "🗑️ Infrastructure deleted."
 
       # ----------------------------------------------------------------
-      # ACTION: DEPLOY (Create OR Resume)
+      # ACTION: DEPLOY
       # ----------------------------------------------------------------
       - name: Apply Infrastructure
         if: ${{ inputs.action_type == 'deploy' }}
         run: terraform apply -auto-approve
 
-      - name: Ensure Instance is Running
-        if: ${{ inputs.action_type == 'deploy' }}
-        run: |
-          INSTANCE_ID=$(terraform output -raw instance_id)
-          aws ec2 start-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+      # --- REMOVED "Ensure Instance is Running" STEP HERE ---
+      # Terraform Apply automatically starts the new instance, so we don't need it.
 
       - name: Get Connection Details
         if: ${{ inputs.action_type == 'deploy' }}
