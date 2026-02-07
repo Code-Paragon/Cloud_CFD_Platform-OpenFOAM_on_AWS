@@ -1,27 +1,28 @@
 variable "aws_region" {
-  default = "af-south-1"
+  description = "The AWS region where the workstation will be deployed (e.g., us-east-1)."
+  type        = string
+  default     = "us-east-1" # We default to N. Virginia as it's usually cheapest for Spot/GPU.
 }
 
 variable "key_name" {
-  description = "Name of the SSH key pair to use"
-}
-
-variable "public_key_path" {
-  description = "Path to your local public key file"
+  description = "The name of the SSH Key Pair in AWS to allow login. (User must create this in AWS Console first!)."
+  type        = string
 }
 
 variable "instance_type" {
-  default = "t3.large"
+  description = "The EC2 hardware type. Default is 'g4dn.xlarge' (NVIDIA T4 GPU)."
+  type        = string
+  default     = "g4dn.xlarge"
 }
 
-variable "ami_id" {
-  description = "AMI ID for Ubuntu 20.04 in af-south-1"
+variable "project_name" {
+  description = "Tag to identify resources in the AWS Console."
+  type        = string
+  default     = "Aerospace-CFD"
 }
 
-variable "vpc_id" {
-  description = "ID of the default VPC in af-south-1"
-}
-
-variable "subnet_id" {
-  description = "ID of a subnet in the selected VPC"
+variable "student_id" {
+  description = "Optional: A label to track which student owns this instance."
+  type        = string
+  default     = "Unknown-Student"
 }
