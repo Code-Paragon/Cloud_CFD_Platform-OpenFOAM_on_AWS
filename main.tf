@@ -121,6 +121,14 @@ resource "aws_instance" "cfd_workstation" {
   subnet_id              = aws_subnet.cfd_subnet.id
   vpc_security_group_ids = [aws_security_group.cfd_sg.id]
 
+  instance_market_options {
+    market_type = "spot"
+    spot_options {
+      max_price = "0.50"          # Waaay higher than actual cost (~$0.10) to ensure we get it
+      spot_instance_type = "one-time"
+    }
+  }
+
   # STORAGE: 150GB Single Drive
   # Logic: Enough space for OS (10GB) + Sim Data (140GB).
   root_block_device {
