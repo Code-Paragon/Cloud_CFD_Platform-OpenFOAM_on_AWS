@@ -8,13 +8,13 @@
 
   tasks:
     # ----------------------------------------------------------------
-    # 1. NETWORK & FIREWALL (The "Anti-Lockout" Step)
+    # 1. NETWORK & FIREWALL
     # ----------------------------------------------------------------
     - name: Force allow Port 8443
       command: ufw allow 8443/tcp
       ignore_errors: yes
 
-    - name: Disable UFW entirely (Just to be safe)
+    - name: Disable UFW entirely
       service:
         name: ufw
         state: stopped
@@ -46,7 +46,7 @@
         state: mounted
 
     # ----------------------------------------------------------------
-    # 3. INSTALL DESKTOP & SWITCH TO LIGHTDM (Crucial for C5)
+    # 3. INSTALL DESKTOP (XFCE + LIGHTDM)
     # ----------------------------------------------------------------
     - name: Update apt cache
       apt:
@@ -63,10 +63,9 @@
           - dbus-x11
           - x11-xserver-utils
           - xserver-xorg-video-dummy
-          - lightdm  # <--- NEW: More stable than GDM3
+          - lightdm
         state: present
 
-    # This file tricks the computer into thinking a monitor is plugged in
     - name: Create Xorg config for Fake Monitor
       copy:
         dest: /etc/X11/xorg.conf
@@ -119,7 +118,7 @@
         create: yes
 
     # ----------------------------------------------------------------
-    # 5. NICE DCV (Remote Desktop)
+    # 5. NICE DCV SETUP
     # ----------------------------------------------------------------
     - name: Create DCV folder
       file:
@@ -156,22 +155,40 @@
         group: ubuntu
 
     # ----------------------------------------------------------------
-    # 7. FINAL STARTUP
+    # 7. STARTUP SEQUENCE (FIXED ORDER)
     # ----------------------------------------------------------------
+
+    # Step A: Restart Display Manager FIRST to load the Fake Monitor
+    - name: Restart Display Manager
+      service:
+        name: lightdm
+        state: restarted
+
+    # Step B: Wait for X11 to stabilize (Crucial for C5 instances)
+    - name: Wait for X11
+      pause:
+        seconds: 10
+
+    # Step C: Start DCV
     - name: Enable DCV Service
       service:
         name: dcvserver
         enabled: yes
         state: started
 
-    - name: Create DCV Session (Force start)
+    # Step D: Create Session (Now that X11 is guaranteed ready)
+    - name: Create DCV Session
       command: dcv create-session --type console --owner ubuntu console
       ignore_errors: yes
 
-    # We do NOT reboot here anymore.
-    # Rebooting kills the manual session we just created.
-    # Instead, we just restart the display manager.
-    - name: Restart Display Manager
-      service:
-        name: lightdm
-        state: restarted
+    # ----------------------------------------------------------------
+    # 8. DEBUGGING (Verify it worked)
+    # ----------------------------------------------------------------
+    - name: Check if Port 8443 is OPEN
+      shell: ss -tulpn | grep 8443
+      register: port_check
+      ignore_errors: yes
+
+    - name: PRINT PORT STATUS (Check Logs if this fails!)
+      debug:
+        var: port_check.stdout_lines
