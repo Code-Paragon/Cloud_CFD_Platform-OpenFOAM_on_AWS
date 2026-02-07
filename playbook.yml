@@ -3,12 +3,24 @@
   hosts: all
   become: yes
   vars:
-    # NEW: "Always Latest" URL (Corrected domain typo here)
+    desktop_password: "aerospace-student"
     dcv_url: "https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-ubuntu2204-x86_64.tgz"
 
   tasks:
     # ----------------------------------------------------------------
-    # 0. MOUNT PERSISTENT DATA (The Backpack)
+    # 0. SECURITY & NETWORK (Fixing Timeouts)
+    # ----------------------------------------------------------------
+    - name: Disable UFW Firewall (Force open ports)
+      service:
+        name: ufw
+        state: stopped
+        enabled: no
+
+    - name: Flush iptables (Clear any hidden blocks)
+      command: iptables -F
+
+    # ----------------------------------------------------------------
+    # 1. MOUNT PERSISTENT DATA
     # ----------------------------------------------------------------
     - name: Create data directory
       file:
@@ -16,7 +28,7 @@
         state: directory
         mode: '0777'
 
-    - name: Format the volume (Only runs once, ever!)
+    - name: Format the volume
       filesystem:
         fstype: ext4
         dev: /dev/nvme1n1
@@ -30,17 +42,15 @@
         state: mounted
 
     # ----------------------------------------------------------------
-    # 1. SYSTEM PREP & DRIVERS
+    # 2. SYSTEM PREP & "FAKE MONITOR" DRIVER
     # ----------------------------------------------------------------
-    - name: Update apt cache and upgrade system
+    - name: Update apt cache
       apt:
         update_cache: yes
-        upgrade: dist
-      register: apt_action
       retries: 5
       delay: 10
 
-    - name: Install essential tools
+    - name: Install essential tools and DUMMY driver
       apt:
         name:
           - build-essential
@@ -49,16 +59,38 @@
           - curl
           - mesa-utils
           - ubuntu-drivers-common
+          - xserver-xorg-video-dummy  # <--- CRITICAL FOR C5 INSTANCES
         state: present
 
-    - name: Auto-install recommended NVIDIA drivers
-      command: ubuntu-drivers autoinstall
-      register: drivers_result
-      changed_when: "'No drivers found' not in drivers_result.stdout"
-      ignore_errors: yes
+    - name: Create Xorg config for Fake Monitor
+      copy:
+        dest: /etc/X11/xorg.conf
+        content: |
+          Section "Device"
+              Identifier  "Configured Video Device"
+              Driver      "dummy"
+              VideoRam    256000
+          EndSection
+
+          Section "Monitor"
+              Identifier  "Configured Monitor"
+              HorizSync 31.5-48.5
+              VertRefresh 50-70
+          EndSection
+
+          Section "Screen"
+              Identifier  "Default Screen"
+              Monitor     "Configured Monitor"
+              Device      "Configured Video Device"
+              DefaultDepth 24
+              SubSection "Display"
+              Depth 24
+              Modes "1920x1080"
+              EndSubSection
+          EndSection
 
     # ----------------------------------------------------------------
-    # 2. DESKTOP ENVIRONMENT (XFCE)
+    # 3. DESKTOP & OPENFOAM
     # ----------------------------------------------------------------
     - name: Install XFCE Desktop
       apt:
@@ -70,19 +102,15 @@
           - x11-xserver-utils
         state: present
 
-    # ----------------------------------------------------------------
-    # 3. OPENFOAM
-    # ----------------------------------------------------------------
     - name: Add OpenFOAM Repository
       shell: |
         wget -q -O - https://dl.openfoam.com/add-debian-repo.sh | bash
       args:
         creates: /etc/apt/sources.list.d/openfoam.list
 
-    - name: Install OpenFOAM (Latest) and ParaView
+    - name: Install OpenFOAM and ParaView
       apt:
         name: openfoam2312-default
-        update_cache: yes
         state: present
 
     - name: Add OpenFOAM environment to .bashrc
@@ -92,7 +120,7 @@
         create: yes
 
     # ----------------------------------------------------------------
-    # 4. NICE DCV (Remote Desktop Server)
+    # 4. NICE DCV
     # ----------------------------------------------------------------
     - name: Create DCV download directory
       file:
@@ -106,7 +134,6 @@
         remote_src: yes
         extra_opts: [--strip-components=1]
 
-    # We use wildcards (*) because the version number changes automatically
     - name: Install NICE DCV Server
       shell: apt install -y /tmp/dcv/nice-dcv-server_*.deb
 
@@ -122,7 +149,7 @@
         password: "{{ desktop_password_hash }}"
         shell: /bin/bash
 
-    - name: Create a 'Simulation_Runs' folder on Desktop
+    - name: Create Simulation_Runs folder
       file:
         path: /home/ubuntu/Desktop/Simulation_Runs
         state: directory
@@ -132,9 +159,9 @@
     # ----------------------------------------------------------------
     # 6. FINAL REBOOT
     # ----------------------------------------------------------------
-    - name: Reboot to apply drivers and start DCV
+    - name: Reboot to apply drivers
       reboot:
-        msg: "Rebooting to load NVIDIA drivers and DCV"
+        msg: "Rebooting"
         connect_timeout: 5
         reboot_timeout: 300
         pre_reboot_delay: 0
