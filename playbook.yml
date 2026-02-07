@@ -77,6 +77,7 @@
         line: "source /usr/lib/openfoam/openfoam2312/etc/bashrc"
         create: yes
 
+<<<<<<< HEAD
     # ----------------------------------------------------------------
     # 4. NICE DCV (Remote Desktop Server)
     #    This enables the high-performance 3D streaming.
@@ -92,6 +93,21 @@
         dest: /tmp/dcv
         remote_src: yes
         extra_opts: [--strip-components=1]
+=======
+    - name: Start VNC server (initial run to create config)
+      become: no
+      shell: |
+        vncserver :1
+      args:
+        creates: /home/ubuntu/.vnc
+
+    - name: Stop VNC server (if running)
+      become: no
+      shell: |
+        if pgrep Xtightvnc > /dev/null; then
+          vncserver -kill :1
+        fi
+>>>>>>> 278a15e82b29099ad79395bce944d8167e418390
 
     - name: Install NICE DCV Server
       apt:
