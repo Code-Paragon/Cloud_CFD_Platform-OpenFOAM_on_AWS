@@ -15,6 +15,29 @@
 
   tasks:
     # ----------------------------------------------------------------
+    # 0. MOUNT PERSISTENT DATA
+    #    This ensures files survive between Spot interruptions.
+    # ----------------------------------------------------------------
+    - name: Create data directory
+      file:
+        path: /data
+        state: directory
+        mode: '0777' # Allow everyone to write
+
+    - name: Format the volume (Only runs once, ever!)
+      filesystem:
+        fstype: ext4
+        dev: /dev/nvme1n1  # AWS attaches /dev/sdf as /dev/nvme1n1 on Nitro instances
+      ignore_errors: yes   # Ignore if already formatted (preserves data!)
+
+    - name: Mount volume
+      mount:
+        path: /data
+        src: /dev/nvme1n1
+        fstype: ext4
+        state: mounted
+
+    # ----------------------------------------------------------------
     # 1. SYSTEM PREP & DRIVERS
     #    The g4dn instance needs NVIDIA drivers to render 3D.
     # ----------------------------------------------------------------
