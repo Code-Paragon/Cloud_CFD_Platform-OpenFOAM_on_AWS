@@ -8,19 +8,23 @@
 
   tasks:
     # ----------------------------------------------------------------
-    # 0. SECURITY & NETWORK (Fixing Timeouts)
+    # 1. NETWORK & FIREWALL (The "Anti-Lockout" Step)
     # ----------------------------------------------------------------
-    - name: Disable UFW Firewall (Force open ports)
+    - name: Force allow Port 8443
+      command: ufw allow 8443/tcp
+      ignore_errors: yes
+
+    - name: Disable UFW entirely (Just to be safe)
       service:
         name: ufw
         state: stopped
         enabled: no
 
-    - name: Flush iptables (Clear any hidden blocks)
+    - name: Flush iptables
       command: iptables -F
 
     # ----------------------------------------------------------------
-    # 1. MOUNT PERSISTENT DATA
+    # 2. MOUNT STORAGE
     # ----------------------------------------------------------------
     - name: Create data directory
       file:
@@ -28,7 +32,7 @@
         state: directory
         mode: '0777'
 
-    - name: Format the volume
+    - name: Format volume
       filesystem:
         fstype: ext4
         dev: /dev/nvme1n1
@@ -42,7 +46,7 @@
         state: mounted
 
     # ----------------------------------------------------------------
-    # 2. SYSTEM PREP & "FAKE MONITOR" DRIVER
+    # 3. INSTALL DESKTOP & SWITCH TO LIGHTDM (Crucial for C5)
     # ----------------------------------------------------------------
     - name: Update apt cache
       apt:
@@ -50,18 +54,19 @@
       retries: 5
       delay: 10
 
-    - name: Install essential tools and DUMMY driver
+    - name: Install Desktop, Fake Monitor, and LightDM
       apt:
         name:
-          - build-essential
-          - awscli
-          - wget
-          - curl
-          - mesa-utils
-          - ubuntu-drivers-common
-          - xserver-xorg-video-dummy  # <--- CRITICAL FOR C5 INSTANCES
+          - xfce4
+          - xfce4-goodies
+          - xorg
+          - dbus-x11
+          - x11-xserver-utils
+          - xserver-xorg-video-dummy
+          - lightdm  # <--- NEW: More stable than GDM3
         state: present
 
+    # This file tricks the computer into thinking a monitor is plugged in
     - name: Create Xorg config for Fake Monitor
       copy:
         dest: /etc/X11/xorg.conf
@@ -89,67 +94,61 @@
               EndSubSection
           EndSection
 
-    # ----------------------------------------------------------------
-    # 3. DESKTOP & OPENFOAM
-    # ----------------------------------------------------------------
-    - name: Install XFCE Desktop
-      apt:
-        name:
-          - xfce4
-          - xfce4-goodies
-          - xorg
-          - dbus-x11
-          - x11-xserver-utils
-        state: present
-
-    - name: Add OpenFOAM Repository
+    - name: Ensure LightDM is the default display manager
       shell: |
-        wget -q -O - https://dl.openfoam.com/add-debian-repo.sh | bash
+        echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
+        dpkg-reconfigure -f noninteractive lightdm
+
+    # ----------------------------------------------------------------
+    # 4. OPENFOAM
+    # ----------------------------------------------------------------
+    - name: Add OpenFOAM Repo
+      shell: wget -q -O - https://dl.openfoam.com/add-debian-repo.sh | bash
       args:
         creates: /etc/apt/sources.list.d/openfoam.list
 
-    - name: Install OpenFOAM and ParaView
+    - name: Install OpenFOAM
       apt:
         name: openfoam2312-default
         state: present
 
-    - name: Add OpenFOAM environment to .bashrc
+    - name: Add to bashrc
       lineinfile:
         path: /home/ubuntu/.bashrc
         line: "source /usr/lib/openfoam/openfoam2312/etc/bashrc"
         create: yes
 
     # ----------------------------------------------------------------
-    # 4. NICE DCV
+    # 5. NICE DCV (Remote Desktop)
     # ----------------------------------------------------------------
-    - name: Create DCV download directory
+    - name: Create DCV folder
       file:
         path: /tmp/dcv
         state: directory
 
-    - name: Download NICE DCV (Latest)
+    - name: Download DCV
       unarchive:
         src: "{{ dcv_url }}"
         dest: /tmp/dcv
         remote_src: yes
         extra_opts: [--strip-components=1]
 
-    - name: Install NICE DCV Server
+    - name: Install DCV Server
       shell: apt install -y /tmp/dcv/nice-dcv-server_*.deb
 
     - name: Install DCV Web Viewer
       shell: apt install -y /tmp/dcv/nice-dcv-web-viewer_*.deb
 
     # ----------------------------------------------------------------
-    # 5. USER CONFIGURATION
+    # 6. USER & PASSWORD
     # ----------------------------------------------------------------
-    - name: Set password for 'ubuntu' user
+    - name: Set Password
       user:
         name: ubuntu
         password: "{{ desktop_password_hash }}"
         shell: /bin/bash
 
-    - name: Create Simulation_Runs folder
+    - name: Create Simulation Folder
       file:
         path: /home/ubuntu/Desktop/Simulation_Runs
         state: directory
@@ -157,13 +156,22 @@
         group: ubuntu
 
     # ----------------------------------------------------------------
-    # 6. FINAL REBOOT
+    # 7. FINAL STARTUP
     # ----------------------------------------------------------------
-    - name: Reboot to apply drivers
-      reboot:
-        msg: "Rebooting"
-        connect_timeout: 5
-        reboot_timeout: 300
-        pre_reboot_delay: 0
-        post_reboot_delay: 30
-        test_command: whoami
+    - name: Enable DCV Service
+      service:
+        name: dcvserver
+        enabled: yes
+        state: started
+
+    - name: Create DCV Session (Force start)
+      command: dcv create-session --type console --owner ubuntu console
+      ignore_errors: yes
+
+    # We do NOT reboot here anymore.
+    # Rebooting kills the manual session we just created.
+    # Instead, we just restart the display manager.
+    - name: Restart Display Manager
+      service:
+        name: lightdm
+        state: restarted
