@@ -12,7 +12,7 @@ variable "key_name" {
 variable "instance_type" {
   description = "The EC2 hardware type. Default is 'g4dn.xlarge' (NVIDIA T4 GPU)."
   type        = string
-  default     = "g4dn.xlarge"
+  default     = "c5.2xlarge"
 }
 
 variable "project_name" {

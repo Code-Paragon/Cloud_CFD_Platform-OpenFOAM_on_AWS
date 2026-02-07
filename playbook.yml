@@ -41,6 +41,7 @@
       command: ubuntu-drivers autoinstall
       register: drivers_result
       changed_when: "'No drivers found' not in drivers_result.stdout"
+      ignore_errors: yes  # <--- CRITICAL: Prevents crash if using CPU instance
 
     # ----------------------------------------------------------------
     # 2. DESKTOP ENVIRONMENT (XFCE)
