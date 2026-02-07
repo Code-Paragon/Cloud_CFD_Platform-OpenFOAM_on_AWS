@@ -9,12 +9,11 @@ on:
         default: 'deploy'
         type: choice
         options:
-          - deploy   # Creates a new workstation OR Resumes a paused one
-          - pause    # Stops the workstation (Saves money, keeps files safe)
-          - destroy  # Deletes EVERYTHING (Data is lost)
+          - deploy   # Creates or Resumes
+          - pause    # Stops instance (Saves money)
+          - destroy  # Deletes everything
 
 env:
-  # Secrets configured in GitHub Repo -> Settings -> Secrets -> Actions
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_REGION: "us-east-1"
@@ -28,63 +27,82 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ----------------------------------------------------------------
-      # 1. SETUP & INITIALIZATION
-      # ----------------------------------------------------------------
+      # 1. SETUP
       - name: Checkout Code
         uses: actions/checkout@v3
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_wrapper: false # Needed to capture raw outputs
+          terraform_wrapper: false
 
       - name: Create SSH Key File
-        # We need the private key on disk so Ansible can use it later
         run: |
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
           chmod 600 key.pem
 
-      - name: Initialize Terraform
-        # Ensure you have created this bucket in AWS or use the dynamic bootstrap script
+      # 2. BOOTSTRAP S3 BUCKET (The "Magic" Step)
+      # This checks if the bucket exists. If not, it creates it using AWS CLI.
+      - name: Bootstrap State Bucket
+        id: bootstrap
         run: |
-          terraform init -backend-config="bucket=aerospace-cfd-terraform-state"
+          # Create a unique name using the repo owner's name to avoid conflicts
+          # Lowercase is required for S3
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          BUCKET_NAME="aerospace-cfd-state-${OWNER}"
+          
+          echo "Target Bucket: $BUCKET_NAME"
+          
+          # Check if bucket exists (head-bucket returns 0 if yes, 404 if no)
+          if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+            echo "✅ Bucket already exists."
+          else
+            echo "⚠️ Bucket not found. Creating..."
+            aws s3 mb s3://$BUCKET_NAME --region us-east-1
+            # Enable versioning so we don't lose the state file easily
+            aws s3api put-bucket-versioning --bucket $BUCKET_NAME --versioning-configuration Status=Enabled
+            echo "✅ Bucket created."
+          fi
+          
+          # Save the name so the next step can use it
+          echo "STATE_BUCKET=$BUCKET_NAME" >> $GITHUB_ENV
+
+      # 3. TERRAFORM INIT (Using the bucket we just found/created)
+      - name: Initialize Terraform
+        run: |
+          terraform init -backend-config="bucket=${{ env.STATE_BUCKET }}"
 
       # ----------------------------------------------------------------
-      # PATH A: PAUSE (Stop Instance)
+      # ACTION: PAUSE
       # ----------------------------------------------------------------
       - name: Pause Workstation
         if: ${{ inputs.action_type == 'pause' }}
         run: |
-          # Get the Instance ID from Terraform State
           INSTANCE_ID=$(terraform output -raw instance_id)
           echo "Stopping Instance: $INSTANCE_ID..."
           aws ec2 stop-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
-          echo "✅ Workstation paused. Storage is safe. Compute costs stopped."
+          echo "✅ Workstation paused."
 
       # ----------------------------------------------------------------
-      # PATH B: DESTROY (Delete Everything)
+      # ACTION: DESTROY
       # ----------------------------------------------------------------
       - name: Destroy Workstation
         if: ${{ inputs.action_type == 'destroy' }}
         run: |
           terraform destroy -auto-approve
-          echo "🗑️ Workstation and Storage deleted."
+          echo "🗑️ Infrastructure deleted."
 
       # ----------------------------------------------------------------
-      # PATH C: DEPLOY (Create OR Resume)
+      # ACTION: DEPLOY (Create OR Resume)
       # ----------------------------------------------------------------
-      - name: Apply Infrastructure (Terraform)
+      - name: Apply Infrastructure
         if: ${{ inputs.action_type == 'deploy' }}
         run: terraform apply -auto-approve
 
-      - name: Ensure Instance is Running (Resume)
+      - name: Ensure Instance is Running
         if: ${{ inputs.action_type == 'deploy' }}
         run: |
-          # If the instance was 'Paused', Terraform Apply might not auto-start it.
-          # We force start it here just in case.
           INSTANCE_ID=$(terraform output -raw instance_id)
-          echo "Ensuring instance $INSTANCE_ID is running..."
           aws ec2 start-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
 
       - name: Get Connection Details
@@ -93,23 +111,18 @@ jobs:
         run: |
           IP=$(terraform output -raw workstation_public_ip)
           echo "INSTANCE_IP=$IP" >> $GITHUB_ENV
-          echo "::notice::🚀 Workstation Ready! IP: $IP"
+          echo "::notice::🚀 Workstation IP: $IP"
 
-      # ----------------------------------------------------------------
-      # CONFIGURATION (Ansible)
-      # Only runs on 'deploy' to install/update software
-      # ----------------------------------------------------------------
-      - name: Wait for SSH (Wake Up)
+      # 4. CONFIGURE SOFTWARE (Ansible)
+      - name: Wait for SSH
         if: ${{ inputs.action_type == 'deploy' }}
         run: |
           echo "Waiting for SSH on ${{ env.INSTANCE_IP }}..."
-          # Loops for up to 5 minutes waiting for port 22 to open
           timeout 300 bash -c 'until nc -z -v -w5 ${{ env.INSTANCE_IP }} 22; do sleep 5; done'
 
-      - name: Configure Software (Ansible)
+      - name: Run Ansible
         if: ${{ inputs.action_type == 'deploy' }}
         run: |
-          # The comma after INSTANCE_IP tells Ansible it's a list, not a file
           ansible-playbook -i "${{ env.INSTANCE_IP }}," \
             --user ubuntu \
             --private-key key.pem \
