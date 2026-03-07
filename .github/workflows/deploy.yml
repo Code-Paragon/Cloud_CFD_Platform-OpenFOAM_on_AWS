@@ -58,8 +58,12 @@ jobs:
       - name: Bootstrap State Bucket
         id: bootstrap
         run: |
+          # Fetch Account ID to ensure global uniqueness
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          BUCKET_NAME="aerospace-cfd-state-${OWNER}"
+          
+          # Shortened prefix to guarantee we stay under the 63-character S3 limit
+          BUCKET_NAME="cfd-state-${OWNER}-${ACCOUNT_ID}"
           
           if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
             echo "✅ Bucket exists."
@@ -105,7 +109,6 @@ jobs:
       - name: Run Ansible Configuration
         if: ${{ inputs.action_type == 'deploy' }}
         run: |
-          # Re-added the OpenSSL hash generator we solved earlier!
           HASH=$(openssl passwd -6 "aerospace-student")
           
           ansible-playbook -i "${{ env.INSTANCE_IP }}," \
