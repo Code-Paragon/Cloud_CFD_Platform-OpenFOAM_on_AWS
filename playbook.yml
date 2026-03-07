@@ -3,7 +3,7 @@
   hosts: all
   become: yes
   vars:
-    desktop_password: "aerospace-student"
+    # Notice don't define the password here anymore; it's injected by deploy.yml
     dcv_url: "https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-ubuntu2204-x86_64.tgz"
 
   tasks:
@@ -22,8 +22,6 @@
     - name: Flush NAT table
       command: iptables -t nat -F
 
-    # CRITICAL FIX: Redirect Port 443 (HTTPS) -> 8443 (DCV)
-    # This allows you to connect via https://IP without specifying a port
     - name: Forward Port 443 to 8443
       command: iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 8443
 
@@ -141,9 +139,6 @@
 
     - name: Install DCV Web Viewer
       shell: apt install -y /tmp/dcv/nice-dcv-web-viewer_*.deb
-
-    # We removed the failed config editing task here.
-    # We rely on the iptables redirect instead.
 
     # ----------------------------------------------------------------
     # 6. USER & PASSWORD

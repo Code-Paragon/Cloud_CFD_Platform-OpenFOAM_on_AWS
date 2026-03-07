@@ -9,16 +9,18 @@ on:
         default: 'deploy'
         type: choice
         options:
-          - deploy   # Creates a new workstation
-          - pause    # TERMINATES the workstation but keeps storage safe
-          - destroy  # Deletes EVERYTHING (Data is lost)
+          - deploy
+          - pause
+          - destroy
+
+# CRITICAL: Required for OIDC Authentication
+permissions:
+  id-token: write
+  contents: read
 
 env:
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_REGION: "us-east-1"
   TF_VAR_aws_region: "us-east-1"
-  TF_VAR_key_name: "aerospace-key"
 
 jobs:
   manage-infrastructure:
@@ -26,20 +28,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. SETUP
       - name: Checkout Code
         uses: actions/checkout@v3
+
+      # 1. AUTHENTICATE VIA OIDC (No Static Secrets!)
+      - name: Configure AWS Credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::315608486737:role/GitHubActions-CFD-Role
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_wrapper: false
 
-      - name: Create SSH Key File
+      # 2. GENERATE EPHEMERAL SSH KEY FOR THIS RUN ONLY
+      - name: Generate Ephemeral SSH Key
+        id: ssh_gen
         run: |
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
-          chmod 600 key.pem
+          ssh-keygen -t rsa -b 4096 -f ./ephemeral_key.pem -q -N ""
+          chmod 600 ./ephemeral_key.pem
+          
+          # Export public key for Terraform to ingest
+          PUB_KEY=$(cat ./ephemeral_key.pem.pub)
+          echo "TF_VAR_public_key_material=$PUB_KEY" >> $GITHUB_ENV
 
+      # 3. TERRAFORM STATE & EXECUTION
       - name: Bootstrap State Bucket
         id: bootstrap
         run: |
@@ -56,40 +71,23 @@ jobs:
           echo "STATE_BUCKET=$BUCKET_NAME" >> $GITHUB_ENV
 
       - name: Initialize Terraform
-        run: |
-          terraform init -backend-config="bucket=${{ env.STATE_BUCKET }}"
+        run: terraform init -backend-config="bucket=${{ env.STATE_BUCKET }}"
 
-      # ----------------------------------------------------------------
-      # ACTION: PAUSE (Actually Terminates Spot, Keeps Data)
-      # ----------------------------------------------------------------
-      - name: Pause Workstation
+      - name: Pause Workstation (Destroy Compute, Keep Data)
         if: ${{ inputs.action_type == 'pause' }}
         run: |
-          # For Spot Instances, "Stopping" isn't allowed. We must Terminate.
-          # But since we have a Persistent Data Volume, this is safe!
-          echo "⚠️ Spot Instances cannot be stopped. Terminating instance (Data volume will be preserved)..."
+          echo "Terminating Spot Instance. Data volume will be preserved."
           terraform destroy -target=aws_instance.cfd_workstation -auto-approve
-          echo "✅ Workstation terminated. Storage volume is SAFE and waiting for next deploy."
 
-      # ----------------------------------------------------------------
-      # ACTION: DESTROY
-      # ----------------------------------------------------------------
-      - name: Destroy Workstation
+      - name: Destroy All Infrastructure
         if: ${{ inputs.action_type == 'destroy' }}
-        run: |
-          terraform destroy -auto-approve
-          echo "🗑️ Infrastructure deleted."
+        run: terraform destroy -auto-approve
 
-      # ----------------------------------------------------------------
-      # ACTION: DEPLOY
-      # ----------------------------------------------------------------
       - name: Apply Infrastructure
         if: ${{ inputs.action_type == 'deploy' }}
         run: terraform apply -auto-approve
 
-      # --- REMOVED "Ensure Instance is Running" STEP HERE ---
-      # Terraform Apply automatically starts the new instance, so we don't need it.
-
+      # 4. CONFIGURATION (ANSIBLE)
       - name: Get Connection Details
         if: ${{ inputs.action_type == 'deploy' }}
         id: get_ip
@@ -98,24 +96,21 @@ jobs:
           echo "INSTANCE_IP=$IP" >> $GITHUB_ENV
           echo "::notice::🚀 Workstation IP: $IP"
 
-      # 4. CONFIGURE SOFTWARE (Ansible)
       - name: Wait for SSH
         if: ${{ inputs.action_type == 'deploy' }}
         run: |
           echo "Waiting for SSH on ${{ env.INSTANCE_IP }}..."
           timeout 300 bash -c 'until nc -z -v -w5 ${{ env.INSTANCE_IP }} 22; do sleep 5; done'
 
-      - name: Run Ansible
+      - name: Run Ansible Configuration
         if: ${{ inputs.action_type == 'deploy' }}
         run: |
-          # 1. Pre-calculate the password hash using Linux OpenSSL
-          #    -6 generates a secure SHA-512 hash
+          # Re-added the OpenSSL hash generator we solved earlier!
           HASH=$(openssl passwd -6 "aerospace-student")
           
-          # 2. Pass the hash to Ansible using the -e (extra vars) flag
           ansible-playbook -i "${{ env.INSTANCE_IP }}," \
             --user ubuntu \
-            --private-key key.pem \
+            --private-key ephemeral_key.pem \
             --ssh-common-args='-o StrictHostKeyChecking=no' \
             -e "desktop_password_hash=$HASH" \
             playbook.yml

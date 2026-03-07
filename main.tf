@@ -4,24 +4,50 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 
-  # PARTIAL CONFIGURATION
-  # We leave bucket details empty. GitHub Actions will fill them in dynamically.
   backend "s3" {
     key    = "student-workstation/terraform.tfstate"
     region = "us-east-1"
   }
 }
 
+variable "aws_region" {
+  default = "us-east-1"
+}
+
+variable "instance_type" {
+  default = "c5.2xlarge"
+}
+
+# -------------------------------------------------------------------------
+# DYNAMIC SSH KEY INGESTION
+# -------------------------------------------------------------------------
+variable "public_key_material" {
+  description = "The public SSH key generated dynamically by GitHub Actions"
+  type        = string
+}
+
+resource "random_id" "key_suffix" {
+  byte_length = 4
+}
+
+resource "aws_key_pair" "generated_key" {
+  key_name   = "cfd-ephemeral-key-${random_id.key_suffix.hex}"
+  public_key = var.public_key_material
+}
+
 provider "aws" {
   region = var.aws_region
 }
 
-# =========================================================================
-# 1. NETWORK & SECURITY (Standard Setup)
-# =========================================================================
-
+# -------------------------------------------------------------------------
+# NETWORK & SECURITY
+# -------------------------------------------------------------------------
 resource "aws_vpc" "cfd_vpc" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
@@ -58,31 +84,24 @@ resource "aws_security_group" "cfd_sg" {
   description = "Allow SSH, DCV (8443), and HTTPS (443)"
   vpc_id      = aws_vpc.cfd_vpc.id
 
-  # 1. SSH (Terminal)
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  # 2. DCV Original Port (Backup)
   ingress {
     from_port   = 8443
     to_port     = 8443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  # 3. HTTPS Port (NEW - Required for the redirect to work!)
   ingress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  # Outbound Traffic (Allow everything)
   egress {
     from_port   = 0
     to_port     = 0
@@ -91,31 +110,20 @@ resource "aws_security_group" "cfd_sg" {
   }
 }
 
-# =========================================================================
-# 2. PERSISTENT STORAGE (The "Backpack")
-#    This volume holds your simulations. It survives Spot Interruptions.
-# =========================================================================
-
+# -------------------------------------------------------------------------
+# STORAGE (The Persistent Backpack)
+# -------------------------------------------------------------------------
 resource "aws_ebs_volume" "sim_data" {
   availability_zone = "${var.aws_region}a"
   size              = 100
   type              = "gp3"
-
-  tags = {
-    Name = "Persistent-CFD-Data"
-  }
-
-  # Safety: Prevents Terraform from accidentally deleting your data
-  lifecycle {
-    prevent_destroy = false
-  }
+  tags = { Name = "Persistent-CFD-Data" }
+  lifecycle { prevent_destroy = false }
 }
 
-# =========================================================================
-# 3. COMPUTE (The "Taxi")
-#    This is a disposable Spot Instance. If it dies, we just get a new one.
-# =========================================================================
-
+# -------------------------------------------------------------------------
+# COMPUTE (The Spot Instance)
+# -------------------------------------------------------------------------
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -128,40 +136,36 @@ data "aws_ami" "ubuntu" {
 resource "aws_instance" "cfd_workstation" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.instance_type
-  key_name      = var.key_name
+
+  # Attach the dynamically generated key here
+  key_name      = aws_key_pair.generated_key.key_name
+
   subnet_id     = aws_subnet.cfd_subnet.id
   vpc_security_group_ids = [aws_security_group.cfd_sg.id]
 
-  # SPOT INSTANCE CONFIGURATION
-  # This uses your "Spot Quota" (32 vCPUs) instead of On-Demand (0 vCPUs).
   instance_market_options {
     market_type = "spot"
     spot_options {
-      max_price = "1.00"
+      max_price          = "1.00"
       spot_instance_type = "one-time"
     }
   }
 
-  # Root Drive (OS Only - Disposable)
   root_block_device {
-    volume_size = 20
+    volume_size           = 20
     delete_on_termination = true
   }
 
-  tags = {
-    Name = "CFD-Spot-Workstation"
-  }
+  tags = { Name = "CFD-Spot-Workstation" }
 }
 
-# =========================================================================
-# 4. ATTACHMENT (Connecting Storage to Compute)
-# =========================================================================
-
 resource "aws_volume_attachment" "ebs_att" {
-  device_name = "/dev/sdf"
-  volume_id   = aws_ebs_volume.sim_data.id
-  instance_id = aws_instance.cfd_workstation.id
-
-  # Ensures we can rip the volume off a dead instance and attach to a new one
+  device_name  = "/dev/sdf"
+  volume_id    = aws_ebs_volume.sim_data.id
+  instance_id  = aws_instance.cfd_workstation.id
   force_detach = true
+}
+
+output "workstation_public_ip" {
+  value = aws_instance.cfd_workstation.public_ip
 }
