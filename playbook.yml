@@ -99,6 +99,14 @@
       shell: |
         echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
         dpkg-reconfigure -f noninteractive lightdm
+        
+    - name: Enable Auto-Login for Ubuntu user
+      copy:
+        dest: /etc/lightdm/lightdm.conf
+        content: |
+          [Seat:*]
+          autologin-user=ubuntu
+          autologin-user-timeout=0
 
     # ----------------------------------------------------------------
     # 4. OPENFOAM
