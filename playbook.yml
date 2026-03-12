@@ -7,7 +7,7 @@
 
   tasks:
     # ----------------------------------------------------------------
-    # 1. NETWORK & FIREWALL (Keep the working redirect)
+    # 1. NETWORK & FIREWALL
     # ----------------------------------------------------------------
     - name: Disable UFW entirely
       service:
@@ -47,7 +47,7 @@
         state: mounted
 
     # ----------------------------------------------------------------
-    # 3. INSTALL DESKTOP (No more fake monitors!)
+    # 3. INSTALL DESKTOP (Virtual Session Setup)
     # ----------------------------------------------------------------
     - name: Update apt cache
       apt:
@@ -66,12 +66,13 @@
           - mesa-utils
         state: present
 
+    # The DBUS launch wrapper is crucial for headless XFCE
     - name: Configure XFCE to boot in DCV Virtual Session
       copy:
         dest: /home/ubuntu/.xinitrc
         content: |
           #!/bin/sh
-          exec startxfce4
+          exec dbus-launch --exit-with-session startxfce4
         owner: ubuntu
         group: ubuntu
         mode: '0755'
@@ -110,11 +111,11 @@
         remote_src: yes
         extra_opts: [--strip-components=1]
 
-    - name: Install DCV Server
-      shell: apt install -y /tmp/dcv/nice-dcv-server_*.deb
-
-    - name: Install DCV Web Viewer
-      shell: apt install -y /tmp/dcv/nice-dcv-web-viewer_*.deb
+    # Notice: the nice-dcv-gl package is strictly REMOVED here.
+    - name: Install DCV Server and Web Viewer
+      shell: |
+        apt install -y /tmp/dcv/nice-dcv-server_*.deb
+        apt install -y /tmp/dcv/nice-dcv-web-viewer_*.deb
 
     # ----------------------------------------------------------------
     # 6. USER & PASSWORD
@@ -133,7 +134,7 @@
         group: ubuntu
 
     # ----------------------------------------------------------------
-    # 7. STARTUP SEQUENCE (Using VIRTUAL Session)
+    # 7. STARTUP SEQUENCE
     # ----------------------------------------------------------------
     - name: Enable and Restart DCV
       service:
@@ -141,9 +142,14 @@
         enabled: yes
         state: restarted
 
-    # CRITICAL FIX: Changed '--type console' to '--type virtual'
+    # Give the daemon time to wake up before asking it to create a session
+    - name: Wait for DCV Daemon to initialize
+      pause:
+        seconds: 5
+
+    # CRITICAL FIX: Renamed session to 'console' so the browser finds it automatically
     - name: Create DCV Virtual Session
-      shell: dcv create-session --type virtual --owner ubuntu cfd-session
+      shell: dcv create-session --type virtual --owner ubuntu console
       register: dcv_session
       failed_when:
         - dcv_session.rc != 0
