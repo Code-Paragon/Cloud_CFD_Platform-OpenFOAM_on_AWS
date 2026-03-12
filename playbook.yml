@@ -3,12 +3,11 @@
   hosts: all
   become: yes
   vars:
-    # Notice don't define the password here anymore; it's injected by deploy.yml
     dcv_url: "https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-ubuntu2204-x86_64.tgz"
 
   tasks:
     # ----------------------------------------------------------------
-    # 1. NETWORK & FIREWALL (The Redirect Fix)
+    # 1. NETWORK & FIREWALL (Keep the working redirect)
     # ----------------------------------------------------------------
     - name: Disable UFW entirely
       service:
@@ -48,7 +47,7 @@
         state: mounted
 
     # ----------------------------------------------------------------
-    # 3. INSTALL DESKTOP
+    # 3. INSTALL DESKTOP (No more fake monitors!)
     # ----------------------------------------------------------------
     - name: Update apt cache
       apt:
@@ -56,7 +55,7 @@
       retries: 5
       delay: 10
 
-    - name: Install Desktop, Fake Monitor, and LightDM
+    - name: Install Base Desktop
       apt:
         name:
           - xfce4
@@ -64,49 +63,18 @@
           - xorg
           - dbus-x11
           - x11-xserver-utils
-          - xserver-xorg-video-dummy
-          - lightdm
+          - mesa-utils
         state: present
 
-    - name: Create Xorg config for Fake Monitor
+    - name: Configure XFCE to boot in DCV Virtual Session
       copy:
-        dest: /etc/X11/xorg.conf
+        dest: /home/ubuntu/.xinitrc
         content: |
-          Section "Device"
-              Identifier  "Configured Video Device"
-              Driver      "dummy"
-              VideoRam    256000
-          EndSection
-
-          Section "Monitor"
-              Identifier  "Configured Monitor"
-              HorizSync 31.5-48.5
-              VertRefresh 50-70
-          EndSection
-
-          Section "Screen"
-              Identifier  "Default Screen"
-              Monitor     "Configured Monitor"
-              Device      "Configured Video Device"
-              DefaultDepth 24
-              SubSection "Display"
-              Depth 24
-              Modes "1920x1080"
-              EndSubSection
-          EndSection
-
-    - name: Ensure LightDM is default
-      shell: |
-        echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
-        dpkg-reconfigure -f noninteractive lightdm
-        
-    - name: Enable Auto-Login for Ubuntu user
-      copy:
-        dest: /etc/lightdm/lightdm.conf
-        content: |
-          [Seat:*]
-          autologin-user=ubuntu
-          autologin-user-timeout=0
+          #!/bin/sh
+          exec startxfce4
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
 
     # ----------------------------------------------------------------
     # 4. OPENFOAM
@@ -165,25 +133,17 @@
         group: ubuntu
 
     # ----------------------------------------------------------------
-    # 7. STARTUP SEQUENCE
+    # 7. STARTUP SEQUENCE (Using VIRTUAL Session)
     # ----------------------------------------------------------------
-    - name: Restart Display Manager
-      service:
-        name: lightdm
-        state: restarted
-
-    - name: Wait for X11
-      pause:
-        seconds: 10
-
     - name: Enable and Restart DCV
       service:
         name: dcvserver
         enabled: yes
         state: restarted
 
-    - name: Create DCV Session
-      shell: dcv create-session --type console --owner ubuntu console
+    # CRITICAL FIX: Changed '--type console' to '--type virtual'
+    - name: Create DCV Virtual Session
+      shell: dcv create-session --type virtual --owner ubuntu cfd-session
       register: dcv_session
       failed_when:
         - dcv_session.rc != 0
@@ -193,18 +153,11 @@
     # ----------------------------------------------------------------
     # 8. DEBUGGING
     # ----------------------------------------------------------------
-    - name: Check Port 8443 (Where server listens)
+    - name: Check Port 8443
       shell: ss -tulpn | grep 8443
       register: port_8443_check
       ignore_errors: yes
 
-    - name: Check NAT Table (Where forwarding happens)
-      shell: iptables -t nat -L -n -v | grep 8443
-      register: nat_check
-      ignore_errors: yes
-
-    - name: PRINT PORT & NAT STATUS
+    - name: PRINT PORT STATUS
       debug:
-        msg:
-          - "Server Listener: {{ port_8443_check.stdout }}"
-          - "Forwarding Rule: {{ nat_check.stdout }}"
+        msg: "Server Listener: {{ port_8443_check.stdout }}"
